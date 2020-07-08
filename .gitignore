@@ -1,0 +1,9 @@
+cmake-build-debug
+CMakeFiles/
+*.cbp
+.idea
+.vscode
+execute.sh
+a.out
+myeasylog.log
+build
