@@ -25,6 +25,7 @@ namespace fs = std::experimental::filesystem;
 
 // Internal
 #include "alive_test.h"
+#include "../modules/call_external_modules.h"
 #include "os_finder_ssh.h"
 #include "config.h"
 #include "database_ctrl.h"
@@ -52,6 +53,19 @@ INITIALIZE_EASYLOGGINGPP
 #define CONCURRENT_TARGET_COUNT 4
 
 bool should_stop = false;
+
+std::vector<std::string> split(const std::string &text, char sep)
+{
+    std::vector<std::string> tokens;
+    std::size_t start=0, end =0;
+    while((end = text.find(sep,start)) != std::string::npos){
+        tokens.emplace_back(text.substr(start,end-start));
+        start = end + 1;
+   } 
+    tokens.emplace_back(text.substr(start));    
+
+    return tokens;
+}
 
 void run(const bsoncxx::types::b_oid scan_id, const Parameters& params, const std::string& target_ip, Config& cfg, bool already_brute_forced)
 {
@@ -97,11 +111,12 @@ void run(const bsoncxx::types::b_oid scan_id, const Parameters& params, const st
                 << close_document << finalize);
 
         const auto ztd_path = cfg.get("ZTD_PATH", "linuxlocalsec");
+
         if (ztd_path.empty())
             LOG(WARNING) << "'ZTD_PATH:linuxlocalsec' is missing. Linux local security plugin won't run.";
         else{    
             if(os_info.os == "linux"){
-                LocalSecurity::Run(os_info, target -> inserted_id().get_oid(), db, cfg.get("ZTD_PATH", "localsec"), params.excluding_functions);
+                LocalSecurity::Run(os_info, target -> inserted_id().get_oid(), db, ztd_path, params.excluding_functions);
 
             }
             else if (os_info.os == "windows") {
@@ -127,6 +142,15 @@ void run(const bsoncxx::types::b_oid scan_id, const Parameters& params, const st
         
         BruteForce::bruteForceCall(params.brute_force_type, params.brute_force_path, params.targets[0], params.excluding_functions, db, already_brute_forced, target -> inserted_id().get_oid());
 
+        std::vector<std::string> args_for_external_modules{params.ssh_username, params.ssh_password, target_ip, "27017", target -> inserted_id().get_oid().value.to_string() };
+        
+        //TODO: Path must be absolute path!
+        for(const auto &file: fs::directory_iterator("modules/external_modules"))
+        {
+            if(file.path().extension() != ".py")
+                continue;
+            ExternalModules::call_external_modules(args_for_external_modules, file.path().filename().replace_extension());
+        }
         std::string scan_hash = scan_id.value.to_string();
         std::string hash = scan_hash + "|" + target_ip;
 
@@ -163,27 +187,34 @@ inline Parameters get_parameters(const char *data)
         std::cout << "JSON is invalid";
         exit(1);
     }
-
-    if (!doc.HasMember("ssh-username") || !doc.HasMember("targets")) {
-        std::cout << "Some fields are missing";
-        exit(1);
-    }
-
-    Parameters params(doc["ssh-username"].GetString());
     
-    if(doc.HasMember("ssh-password")){
-        try{
-            params.ssh_password = doc["ssh-password"].GetString();
-        }
-        catch (const std::exception& e) {
-            std::cout << "Exception occured when setting password";
+    if(doc.HasMember("external-function-path"))
+    {
+        try
+        {
+            fs::copy(doc["external-function-path"].GetString(), "modules/external_modules");
+            std::cout << "Given file added to external_modules !\n";
             exit(1);
         }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+            exit(1);
+        }
+        
     }
-    else{
-        if(doc.HasMember("public-key-path")){
+    else
+    {
+        if (!doc.HasMember("ssh-username") || !doc.HasMember("targets")) {
+            std::cout << "Some fields are missing";
+            exit(1);
+        }
+
+        Parameters params(doc["ssh-username"].GetString());
+        
+        if(doc.HasMember("ssh-password")){
             try{
-                params.public_key_path = doc["public-key-path"].GetString();
+                params.ssh_password = doc["ssh-password"].GetString();
             }
             catch (const std::exception& e) {
                 std::cout << "Exception occured when setting password";
@@ -191,85 +222,96 @@ inline Parameters get_parameters(const char *data)
             }
         }
         else{
-            std::cout << "password or public key must be entered !\n";
-            exit(1);
-        }
-    }
-
-    if(doc.HasMember("brute-force-type")){
-        try{
-            params.brute_force_type = doc["brute-force-type"].GetString();
-        }
-        catch (const std::exception& e) {
-            std::cout << "Exception occured when setting brute force type";
-            exit(1);
-        }
-
-        if(doc.HasMember("brute-force-path"))
-        {
-            try
-            {
-                params.brute_force_path = doc["brute-force-path"].GetString();
+            if(doc.HasMember("public-key-path")){
+                try{
+                    params.public_key_path = doc["public-key-path"].GetString();
+                }
+                catch (const std::exception& e) {
+                    std::cout << "Exception occured when setting password";
+                    exit(1);
+                }
             }
-            catch(const std::exception& e)
-            {
-                std::cout << "Exception occured when setting brute force path";
+            else{
+                std::cout << "password or public key must be entered !\n";
                 exit(1);
             }
-            
         }
-    }
 
+        if(doc.HasMember("brute-force-type")){
+            try{
+                params.brute_force_type = doc["brute-force-type"].GetString();
+            }
+            catch (const std::exception& e) {
+                std::cout << "Exception occured when setting brute force type";
+                exit(1);
+            }
 
-    if (doc.HasMember("ssh-port")) {
-        try {
-            params.ssh_port = std::stoi(doc["ssh-port"].GetString());
-        }
-        catch (const std::exception& e) {
-            std::cout << "Port must be a number between 0 and 65535";
-            exit(1);
-        }
-    }
-
-    if (doc.HasMember("nmap")) {
-        try {
-            params.nmap_option = doc["nmap"].GetString();
-        }
-        catch (const std::exception& e) {
-            std::cout << "Exception occured with nmap option!";
-            exit(1);
-        }
-    }
-
-     if (doc.HasMember("excluding_functions")) {
-        try {
-            for(const auto& function: doc["excluding_functions"].GetArray()){
-                params.excluding_functions.emplace_back(function.GetString());
+            if(doc.HasMember("brute-force-path"))
+            {
+                try
+                {
+                    params.brute_force_path = doc["brute-force-path"].GetString();
+                }
+                catch(const std::exception& e)
+                {
+                    std::cout << "Exception occured when setting brute force path";
+                    exit(1);
+                }
+                
             }
         }
-        catch (const std::exception& e) {
-            std::cout << "Exception occured excluding functions!";
+
+
+        if (doc.HasMember("ssh-port")) {
+            try {
+                params.ssh_port = std::stoi(doc["ssh-port"].GetString());
+            }
+            catch (const std::exception& e) {
+                std::cout << "Port must be a number between 0 and 65535";
+                exit(1);
+            }
+        }
+
+        if (doc.HasMember("nmap")) {
+            try {
+                params.nmap_option = doc["nmap"].GetString();
+            }
+            catch (const std::exception& e) {
+                std::cout << "Exception occured with nmap option!";
+                exit(1);
+            }
+        }
+
+        if (doc.HasMember("excluding_functions")) {
+            try {
+                for(const auto& function: doc["excluding_functions"].GetArray()){
+                    params.excluding_functions.emplace_back(function.GetString());
+                }
+            }
+            catch (const std::exception& e) {
+                std::cout << "Exception occured excluding functions!";
+                exit(1);
+            }
+        }
+
+        if (params.ssh_port < 0 || params.ssh_port > 65535) {
+            std::cout << "Port should be between 0 and 65535";
             exit(1);
         }
-    }
 
-    if (params.ssh_port < 0 || params.ssh_port > 65535) {
-        std::cout << "Port should be between 0 and 65535";
-        exit(1);
-    }
-
-    // Checking if IP addresses are valid
-    struct sockaddr_in sa{}; // Dumb variable not to get seg fault
-    for(const auto& target: doc["targets"].GetArray()) {
-        const char* target_cstr = target.GetString();
-        if (!inet_pton(AF_INET, target_cstr, &sa.sin_addr)) {
-            std::cout << "IP address is invalid";
-            exit(1);
+        // Checking if IP addresses are valid
+        struct sockaddr_in sa{}; // Dumb variable not to get seg fault
+        for(const auto& target: doc["targets"].GetArray()) {
+            const char* target_cstr = target.GetString();
+            if (!inet_pton(AF_INET, target_cstr, &sa.sin_addr)) {
+                std::cout << "IP address is invalid";
+                exit(1);
+            }
+            params.targets.emplace_back(target_cstr);
         }
-        params.targets.emplace_back(target_cstr);
-    }
 
-    return params;
+        return params;
+    }
 }
 
 inline void daemonize()
@@ -416,7 +458,7 @@ int main(int argc, char* const* argv)
     }
 
     Parameters params = get_parameters(argv[1]);
-    daemonize();
+    //daemonize();
     initialize_logging();
 
     Config cfg;

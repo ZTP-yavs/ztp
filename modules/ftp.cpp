@@ -125,7 +125,7 @@ void FTP::ftp_login_call(std::vector<std::string> excluding_functions, std::vect
         creds.push_back(FTP::Credentials({"anonymous",""}));
     }
 
-    std::vector<int> indexes = login(creds);
+    /*std::vector<int> indexes = login(creds);
     
 
         for(auto &index: indexes)
@@ -137,5 +137,5 @@ void FTP::ftp_login_call(std::vector<std::string> excluding_functions, std::vect
                                     << "target" << target_id
                                     << finalize);
         }
-
+*/
 }
