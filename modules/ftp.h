@@ -19,7 +19,7 @@ namespace FTP {
 
     bool login(std::vector<std::string> excluding_functions, Credentials credentials, std::string ip_address);
 
-    std::vector<int> login(std::vector<Credentials> credentials_list);
+    //std::vector<int> login(std::vector<Credentials> credentials_list);
 
     void ftp_login_call(std::vector<std::string> excluding_functions, std::vector<std::string> ip_addresses, const DatabaseCtrl &db, const bsoncxx::types::b_oid target_id);
 }
